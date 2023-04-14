@@ -2,7 +2,7 @@ import parser from "yargs-parser";
 import prompts from 'prompts';
 import { globSync } from 'glob';
 import chalk from 'chalk';
-import { lstatSync, createReadStream } from 'fs';
+import { lstatSync, createReadStream, readFileSync } from 'fs';
 import axios from 'axios';
 import FormData from 'form-data';
 
@@ -10,7 +10,7 @@ const rawArgs = process.argv.slice(0);
 const args = parser(rawArgs);
 
 // console.log("Unparsed args:", rawArgs);
-console.log("Parsed args:", args);
+// console.log("Parsed args:", args);
 
 
 const questions = [
@@ -19,6 +19,12 @@ const questions = [
     name: 'source',
     message: 'Path to source files',
     initial: ''
+  },
+  {
+    type: 'text',
+    name: 'ignoreFileName',
+    message: 'Ignore file name',
+    initial: 'metadata.json'
   },
   {
     type: 'text',
@@ -46,6 +52,12 @@ const questions = [
     type: 'text',
     name: 'cookies',
     message: 'Cookies used in requests calls'
+  },
+  {
+    type: 'confirm',
+    name: 'printAlfrescoIds',
+    message: 'Print every root directory children id after upload is ready?',
+    initial: true
   },
 ];
 
@@ -79,12 +91,18 @@ const listOfPaths = (path: string) => {
 
 const baseUrl = `${args.target}/alfresco/api/-default-/public/alfresco/versions/1`
 
-const createForm = (filePath: string) => {
+const createForm = (filePath: string, title?: string, description?: string) => {
   const filedata = createReadStream(filePath)
   const formData = new FormData();
   formData.append('nodeType', 'cm:content');
   formData.append('filedata', filedata);
   formData.append('relativePath', relativePath(filePath));
+  if (title) {
+    formData.append('cm:title', title);
+  }
+  if (description) {
+    formData.append('cm:description', description);
+  }
   return formData;
 }
 
@@ -94,6 +112,16 @@ const slicePath = (path: string) => {
 
 const relativePath = (path: string) => {
   return path.split('/').slice(2, -1).join('/')
+}
+
+const fileName = (path: string) => {
+  return path.split('/').pop()
+}
+
+const onlyPath = (path: string) => {
+  const arr = path.split('/')
+  arr.pop()
+  return arr.join('/')
 }
 
 (async () => {
@@ -110,13 +138,18 @@ const relativePath = (path: string) => {
 
   const folderPaths: string[] = [];
   const filePaths: string[] = [];
+  const metadataFilePaths: string[] = [];
 
   const parsePaths = (paths: string[]) => {
     paths.forEach((path) => {
       if (lstatSync(path).isDirectory()) {
         folderPaths.push(path);
-      } else if (lstatSync(path).isFile()) {
+      }
+      if (lstatSync(path).isFile() && fileName(path) !== response.ignoreFileName) {
         filePaths.push(path);
+      }
+      if (fileName(path) === response.ignoreFileName) {
+        metadataFilePaths.push(path);
       }
     })
   }
@@ -124,26 +157,58 @@ const relativePath = (path: string) => {
   parsePaths(paths)
 
 
-  let successCount = 0;
-  let failCount = 0;
+  let successResponses = [];
+  let failResponses = [];
+  const relativeMetadataPaths = metadataFilePaths.map((path) => onlyPath(path))
 
-  Promise.all(filePaths.map((path) => {
-    axios.post(`${baseUrl}/nodes/${response.rootNodeId}/children`,
-      createForm(path), {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-        'X-API-KEY': response.xApiKey,
-        'OAM-REMOTE-USER': response.user,
-        cookie: response.cookies,
-      },
-    }).then((data) => {
-      successCount++;
+  Promise.all(filePaths.map(async (path) => {
+
+    axios.defaults.headers['X-API-KEY'] = response.xApiKey
+    axios.defaults.headers['OAM-REMOTE-USER'] = response.user
+    axios.defaults.headers.cookie = response.cookies
+
+    const relativeFilePath = onlyPath(path);
+
+    let metadataFile = relativeMetadataPaths.find(metapath => metapath === relativeFilePath)
+    metadataFile = metadataFile + '/metadata.json';
+    let metadata = JSON.parse(readFileSync(metadataFile, 'utf-8'));
+
+    const fileMetadata = metadata.files.find((item: any) => item.file === fileName(path))
+
+    let title = null;
+    let description = null;
+
+    if (fileMetadata.title) {
+      title = fileMetadata.title
+    }
+    if (fileMetadata.caption) {
+      description = fileMetadata.caption
+    }
+
+
+    try {
+      const data = await axios.post(`${baseUrl}/nodes/${response.rootNodeId}/children`,
+        createForm(path, title, description), {
+      });
+      successResponses.push(data);
       console.log(chalk.greenBright(`\u2714 `) + path.split('/').pop());
-    }).catch((error) => {
-      failCount++;
+      return data;
+    } catch (error) {
+      failResponses.push(error);
       console.log(chalk.redBright(`\u2718 `) + path.split('/').pop());
-    })
+      return error;
+    }
   })
-  )
+  ).then(async values => {
+    console.log(`Uploaded ${chalk.greenBright(successResponses.length)} files. ${failResponses.length ? 'Failed to upload ' + chalk.redBright(failResponses.length) : ''}`)
+    if (response.printAlfrescoIds) {
+      const rootChilds = await axios.get(`${baseUrl}/nodes/${response.rootNodeId}/children?where=(isFolder=true)`).then((res) => {
+        return res.data
+      });
+      rootChilds.list.entries.forEach(({ entry }) => {
+        console.log(`${entry.name}, ${entry.id}`)
+      })
+    }
+  })
 })();
 
