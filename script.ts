@@ -129,12 +129,17 @@ const onlyPath = (path: string) => {
   const paths = listOfPaths(response.source)
   paths.forEach(path => console.log(chalk.magenta(`  ${slicePath(path)}`)))
 
-  await prompts({
+  const continueExecution = await prompts({
     type: 'confirm',
     name: 'confirmPaths',
     message: 'Uploading files and directories above to Alfresco. Confirm?',
     initial: true
   })
+
+  if (!continueExecution.confirmPaths) {
+    console.log('Exiting process...')
+    process.exit();
+  }
 
   const folderPaths: string[] = [];
   const filePaths: string[] = [];
@@ -156,7 +161,6 @@ const onlyPath = (path: string) => {
 
   parsePaths(paths)
 
-
   let successResponses = [];
   let failResponses = [];
   const relativeMetadataPaths = metadataFilePaths.map((path) => onlyPath(path))
@@ -173,15 +177,17 @@ const onlyPath = (path: string) => {
     metadataFile = metadataFile + '/metadata.json';
     let metadata = JSON.parse(readFileSync(metadataFile, 'utf-8'));
 
-    const fileMetadata = metadata.files.find((item: any) => item.file === fileName(path))
+    const fileMetadata = metadata.files.find((item: any) => {
+      return item.file.normalize('NFC') === fileName(path).normalize('NFC')
+    })
 
     let title = null;
     let description = null;
 
-    if (fileMetadata.title) {
+    if (fileMetadata.title !== "") {
       title = fileMetadata.title
     }
-    if (fileMetadata.caption) {
+    if (fileMetadata.caption !== "") {
       description = fileMetadata.caption
     }
 
