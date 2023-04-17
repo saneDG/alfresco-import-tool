@@ -5,6 +5,7 @@ import chalk from 'chalk';
 import { lstatSync, createReadStream, readFileSync } from 'fs';
 import axios from 'axios';
 import FormData from 'form-data';
+import pLimit from 'p-limit';
 
 const rawArgs = process.argv.slice(0);
 const args = parser(rawArgs);
@@ -96,7 +97,7 @@ const createForm = (filePath: string, title?: string, description?: string) => {
   const formData = new FormData();
   formData.append('nodeType', 'cm:content');
   formData.append('filedata', filedata);
-  formData.append('relativePath', relativePath(filePath));
+  formData.append('relativePath', relativePath(filePath).replace('.', ''));
   if (title) {
     formData.append('cm:title', title);
   }
@@ -123,6 +124,8 @@ const onlyPath = (path: string) => {
   arr.pop()
   return arr.join('/')
 }
+
+const limit = pLimit(10);
 
 (async () => {
   const response = await prompts(questions as any);
@@ -193,15 +196,16 @@ const onlyPath = (path: string) => {
 
 
     try {
-      const data = await axios.post(`${baseUrl}/nodes/${response.rootNodeId}/children`,
+      const data = await limit(() => axios.post(`${baseUrl}/nodes/${response.rootNodeId}/children`,
         createForm(path, title, description), {
-      });
+      }));
       successResponses.push(data);
       console.log(chalk.greenBright(`\u2714 `) + path.split('/').pop());
       return data;
     } catch (error) {
       failResponses.push(error);
       console.log(chalk.redBright(`\u2718 `) + path.split('/').pop());
+      console.log(error)
       return error;
     }
   })
